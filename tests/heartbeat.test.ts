@@ -19,6 +19,7 @@ function makeRunner(opts: {
   runAgentResult?: string;
   runAgentError?: Error;
   activeHours?: { start: string; end: string };
+  healthcheckUrl?: string;
 }) {
   const sendCalls: Array<{ text: string; attachments: string[] }> = [];
   const runAgentCalls: string[] = [];
@@ -35,6 +36,7 @@ function makeRunner(opts: {
       sendCalls.push({ text, attachments });
     },
     activeHours: opts.activeHours,
+    healthcheckUrl: opts.healthcheckUrl,
   });
 
   return { runner, sendCalls, runAgentCalls };
@@ -191,6 +193,90 @@ describe("periodic heartbeat", () => {
 
     await runner.runOnce();
 
+    expect(runAgentCalls.length).toBe(1);
+  });
+});
+
+describe("healthcheck ping (dead man's switch)", () => {
+  const realFetch = globalThis.fetch;
+  let pingCalls: string[] = [];
+  let pingMode: "ok" | "http500" | "network-error" = "ok";
+
+  beforeEach(() => {
+    pingCalls = [];
+    pingMode = "ok";
+    globalThis.fetch = (async (url: unknown) => {
+      pingCalls.push(String(url));
+      if (pingMode === "network-error") throw new Error("connection refused");
+      return new Response("ping", { status: pingMode === "ok" ? 200 : 500 });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("pings the URL on every tick, even outside active hours", async () => {
+    setSystemTime(new Date("2025-01-15T03:00:00"));
+    writeFileSync(join(tmpDir, "HEARTBEAT.md"), "Check stuff");
+    const { runner, runAgentCalls } = makeRunner({
+      activeHours: { start: "08:00", end: "23:00" },
+      healthcheckUrl: "https://hc-ping.com/abcd-1234",
+    });
+
+    await runner.runOnce();
+
+    // Agent skipped (inactive hours), but the liveness ping still went out
+    expect(runAgentCalls.length).toBe(0);
+    expect(pingCalls).toEqual(["https://hc-ping.com/abcd-1234"]);
+  });
+
+  test("pings even when HEARTBEAT.md is empty", async () => {
+    setSystemTime(new Date("2025-01-15T12:00:00"));
+    const { runner } = makeRunner({
+      healthcheckUrl: "https://hc-ping.com/abcd-1234",
+    });
+
+    await runner.runOnce();
+
+    expect(pingCalls.length).toBe(1);
+  });
+
+  test("ping network failure does not break the heartbeat run", async () => {
+    pingMode = "network-error";
+    setSystemTime(new Date("2025-01-15T12:00:00"));
+    writeFileSync(join(tmpDir, "HEARTBEAT.md"), "Check things");
+    const { runner, runAgentCalls } = makeRunner({
+      healthcheckUrl: "https://hc-ping.com/abcd-1234",
+    });
+
+    await runner.runOnce();
+
+    expect(pingCalls.length).toBe(1);
+    expect(runAgentCalls.length).toBe(1);
+  });
+
+  test("ping HTTP 500 does not break the heartbeat run", async () => {
+    pingMode = "http500";
+    setSystemTime(new Date("2025-01-15T12:00:00"));
+    writeFileSync(join(tmpDir, "HEARTBEAT.md"), "Check things");
+    const { runner, runAgentCalls } = makeRunner({
+      healthcheckUrl: "https://hc-ping.com/abcd-1234",
+    });
+
+    await runner.runOnce();
+
+    expect(runAgentCalls.length).toBe(1);
+  });
+
+  test("does not call fetch when no URL is configured", async () => {
+    setSystemTime(new Date("2025-01-15T12:00:00"));
+    writeFileSync(join(tmpDir, "HEARTBEAT.md"), "Check things");
+    const { runner, runAgentCalls } = makeRunner({});
+
+    await runner.runOnce();
+
+    expect(pingCalls.length).toBe(0);
     expect(runAgentCalls.length).toBe(1);
   });
 });

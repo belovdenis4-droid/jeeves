@@ -233,6 +233,7 @@ async function main() {
   const heartbeat = new HeartbeatRunner({
     intervalMs: heartbeatIntervalMs,
     workspaceDir,
+    healthcheckUrl: process.env.HEALTHCHECK_PING_URL,
     runAgent: async (message) => {
       return withAgentLock(async () => {
         const ctx = makeAgentContext("heartbeat");
@@ -270,6 +271,7 @@ async function main() {
     skills: loadSkillsFromDirs(skillDirs).length,
     telegram: channel ? "active" : "not configured",
     heartbeat: `${heartbeatIntervalMs / 60000}min`,
+    healthcheck: process.env.HEALTHCHECK_PING_URL ? "active" : "not configured",
     cronJobs: cronScheduler.listJobs().length,
     logLevel,
   });

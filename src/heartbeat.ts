@@ -19,13 +19,22 @@ export class HeartbeatRunner {
       runAgent: (message: string) => Promise<AgentResult>;
       sendToChannel: (text: string, attachments: string[]) => Promise<void>;
       activeHours?: { start: string; end: string; timezone?: string };
+      /**
+       * Dead man's switch: URL pinged on every heartbeat tick (e.g.
+       * healthchecks.io). If the process or host dies, pings stop and the
+       * external monitor raises an alert. Pings fire 24/7, regardless of
+       * active hours — they signal process liveness, not agent activity.
+       */
+      healthcheckUrl?: string;
     },
   ) {}
 
   start(): void {
     log.info("heartbeat", "Started", {
       interval: `${Math.round(this.opts.intervalMs / 60000)}min`,
+      healthcheck: !!this.opts.healthcheckUrl,
     });
+    void this.pingHealthcheck();
     this.interval = setInterval(() => this.runOnce(), this.opts.intervalMs);
   }
 
@@ -37,6 +46,9 @@ export class HeartbeatRunner {
   }
 
   async runOnce(): Promise<void> {
+    // Liveness ping first: fires even when the heartbeat itself is skipped
+    // (inactive hours, empty HEARTBEAT.md) or the agent run fails.
+    await this.pingHealthcheck();
     try {
       // Check active hours
       if (!this.isWithinActiveHours()) {
@@ -83,6 +95,25 @@ export class HeartbeatRunner {
       this.lastSentAt = now;
     } catch (err) {
       log.error("heartbeat", "Error", formatError(err));
+    }
+  }
+
+  /**
+   * Ping the external dead man's switch. Never throws and never blocks the
+   * heartbeat: a failing monitor must not take the bot down with it.
+   */
+  private async pingHealthcheck(): Promise<void> {
+    const url = this.opts.healthcheckUrl;
+    if (!url) return;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+      if (res.ok) {
+        log.debug("heartbeat", "Healthcheck ping sent");
+      } else {
+        log.warn("heartbeat", "Healthcheck ping rejected", { status: res.status });
+      }
+    } catch (err) {
+      log.warn("heartbeat", "Healthcheck ping failed", formatError(err));
     }
   }
 

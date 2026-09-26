@@ -79,6 +79,17 @@ docker compose logs -f jeeves
 docker compose logs watchtower
 ```
 
+### Dead man's switch (optional)
+
+`restart: unless-stopped` covers a crashed container, but not the VM or host
+network going down — in that case the bot simply goes silent. For that, set
+`HEALTHCHECK_PING_URL` in `.env` to a [healthchecks.io](https://healthchecks.io)
+ping URL (create a check with period = your heartbeat interval, grace ~15 min).
+
+Jeeves pings this URL on every heartbeat tick, 24/7 — even outside active hours
+and even when the agent itself has nothing to do. If the process or the whole
+host dies, pings stop and healthchecks.io alerts you (Telegram, email, ...).
+
 ## File Layout
 
 ```
